@@ -5,6 +5,7 @@
   * onefile —— 资源（assets/、app.ico）解压到 sys._MEIPASS，只读使用
   * data/ 不打包 —— 由 store.py 定位到 exe 所在目录，重装/重启都不丢
   * excludes —— 排除 PySide6 没用到的重量级模块，减小体积
+  * version_info.txt —— 写进 PE 的版本资源，属性面板不再是空白
 """
 import os
 
@@ -82,4 +83,8 @@ exe = EXE(
     # 不加这个，Windows 会把窗口当成「系统 DPI 感知」，拖到缩放比不同的另一块屏上
     # 会被整体位图拉伸 —— 于是小屏上就「显示不全」了。
     manifest=os.path.join(proj, "app.manifest"),
+    # 版本信息资源：写进 PE 的 VS_VERSIONINFO。
+    # 有了它，exe 属性面板里公司/版本/说明都不再是空白；没版本资源的 exe
+    # 在启发式引擎看来更可疑（这也是被 Defender 误报的因素之一）。
+    version=os.path.join(proj, "version_info.txt"),
 )

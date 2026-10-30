@@ -1,0 +1,56 @@
+# -*- coding: utf-8 -*-
+# exe 的版本信息资源（右键属性 → 详细信息 里看到的东西）。
+# PyInstaller 用 eval() 直接执行本文件，所以整个文件必须是「一个表达式」：
+# 不能有 import、不能有多条语句，只能是一个 VSVersionInfo(...) 字面构造。
+#
+# 留着它的原因：没有版本资源的 exe 在启发式引擎看来更像可疑文件，
+# 属性面板一片空白也会让下载的人不安心。
+#
+# 改版本号时，三处要一起改：filevers / prodvers / FileVersion / ProductVersion。
+VSVersionInfo(
+  ffi=FixedFileInfo(
+    filevers=(1, 0, 0, 0),
+    prodvers=(1, 0, 0, 0),
+    mask=0x3f,
+    flags=0x0,
+    OS=0x40004,
+    fileType=0x1,
+    subtype=0x0,
+    date=(0, 0)
+  ),
+  kids=[
+    StringFileInfo(
+      [
+        StringTable(
+          u'080404B0',
+          [
+            StringStruct(u'CompanyName', u'Charming'),
+            StringStruct(u'FileDescription', u'猫娘工具箱 · Windows 便携工具箱（文件夹恢复 / 字数统计 / JSON转MD / MD浏览器 / 翻译）'),
+            StringStruct(u'FileVersion', u'1.0.0.0'),
+            StringStruct(u'InternalName', u'NekoToolbox'),
+            StringStruct(u'LegalCopyright', u'Copyright (c) 2026 Charming · MIT License'),
+            StringStruct(u'OriginalFilename', u'猫娘工具箱.exe'),
+            StringStruct(u'ProductName', u'猫娘工具箱'),
+            StringStruct(u'ProductVersion', u'1.0.0'),
+            StringStruct(u'Comments', u'本程序完全由 AI 生成，未经人工逐行审阅。源码：https://github.com/charming386/Neko-Toolbox')
+          ]
+        ),
+        StringTable(
+          u'040904B0',
+          [
+            StringStruct(u'CompanyName', u'Charming'),
+            StringStruct(u'FileDescription', u'NekoToolbox - portable Windows toolkit (folder restore / word count / JSON to MD / MD browser / translate)'),
+            StringStruct(u'FileVersion', u'1.0.0.0'),
+            StringStruct(u'InternalName', u'NekoToolbox'),
+            StringStruct(u'LegalCopyright', u'Copyright (c) 2026 Charming - MIT License'),
+            StringStruct(u'OriginalFilename', u'NekoToolbox.exe'),
+            StringStruct(u'ProductName', u'NekoToolbox'),
+            StringStruct(u'ProductVersion', u'1.0.0'),
+            StringStruct(u'Comments', u'Generated entirely by AI, not reviewed line by line. Source: https://github.com/charming386/Neko-Toolbox')
+          ]
+        )
+      ]
+    ),
+    VarFileInfo([VarStruct(u'Translation', [2052, 1200, 1033, 1200])])
+  ]
+)
