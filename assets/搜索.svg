@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <path d="M420 170a250 250 0 1 0 0 500a250 250 0 1 0 0-500zM420 250a170 170 0 1 1 0 340a170 170 0 1 1 0-340z"
+        fill="#000000" fill-rule="evenodd"/>
+  <path d="M628 628L856 856" stroke="#000000" stroke-width="104" stroke-linecap="round" fill="none"/>
+</svg>

@@ -1,0 +1,9 @@
+# 运行依赖（Windows 10/11，64 位）
+PySide6-Essentials>=6.6
+pywin32>=306
+pywinauto>=0.6.9
+comtypes>=1.2
+markdown>=3.5          # 投稿预览：Markdown → HTML（纯 Python，无 C 扩展）
+
+# 打包用（只开发时需要）
+pyinstaller>=6.0
