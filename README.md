@@ -18,7 +18,8 @@
 
 ## 下载
 
-不想装 Python：到 **Releases** 下载 `猫娘工具箱-win64.zip`，解压后双击 exe 即用
+不想装 Python：到 **[Releases](https://github.com/charming386/Neko-Toolbox/releases/latest)** 下载
+`NekoToolbox-v1.0.0-win64.zip`，解压后双击 `猫娘工具箱.exe` 即用
 （Windows 10 / 11 64 位，压缩后约 49 MB，解开约 50 MB）。
 
 ## AI 声明
@@ -38,7 +39,7 @@ python app.py
 
 ## 使用
 
-双击 `猫娘工具箱.exe` 即可，无需安装（exe 从 Releases 下载，或按文末自己打包）。
+双击 `猫娘工具箱.exe` 即可，无需安装（exe 从 [Releases](https://github.com/charming386/Neko-Toolbox/releases/latest) 下载，或按文末自己打包）。
 
 **界面结构**：左侧竖栏是**工具**（文件夹恢复 / 字数统计 / JSON转MD / MD浏览器 / 翻译）；右上角是该工具的**标签页**
 （文件夹恢复里是「文件夹恢复」「预设」两页）。标题栏右侧的齿轮按钮打开**设置**窗口。
