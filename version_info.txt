@@ -9,8 +9,8 @@
 # 改版本号时，三处要一起改：filevers / prodvers / FileVersion / ProductVersion。
 VSVersionInfo(
   ffi=FixedFileInfo(
-    filevers=(1, 0, 0, 0),
-    prodvers=(1, 0, 0, 0),
+    filevers=(1, 1, 0, 0),
+    prodvers=(1, 1, 0, 0),
     mask=0x3f,
     flags=0x0,
     OS=0x40004,
@@ -25,13 +25,13 @@ VSVersionInfo(
           u'080404B0',
           [
             StringStruct(u'CompanyName', u'Charming'),
-            StringStruct(u'FileDescription', u'猫娘工具箱 · Windows 便携工具箱（文件夹恢复 / 字数统计 / JSON转MD / MD浏览器 / 翻译）'),
-            StringStruct(u'FileVersion', u'1.0.0.0'),
+            StringStruct(u'FileDescription', u'猫娘工具箱 · Windows 便携工具箱（文件夹恢复 / 字数统计 / JSON转MD / MD浏览器 / HTML显示器 / 翻译）'),
+            StringStruct(u'FileVersion', u'1.1.0.0'),
             StringStruct(u'InternalName', u'NekoToolbox'),
             StringStruct(u'LegalCopyright', u'Copyright (c) 2026 Charming · MIT License'),
             StringStruct(u'OriginalFilename', u'猫娘工具箱.exe'),
             StringStruct(u'ProductName', u'猫娘工具箱'),
-            StringStruct(u'ProductVersion', u'1.0.0'),
+            StringStruct(u'ProductVersion', u'1.1.0'),
             StringStruct(u'Comments', u'本程序完全由 AI 生成，未经人工逐行审阅。源码：https://github.com/charming386/Neko-Toolbox')
           ]
         ),
@@ -39,13 +39,13 @@ VSVersionInfo(
           u'040904B0',
           [
             StringStruct(u'CompanyName', u'Charming'),
-            StringStruct(u'FileDescription', u'NekoToolbox - portable Windows toolkit (folder restore / word count / JSON to MD / MD browser / translate)'),
-            StringStruct(u'FileVersion', u'1.0.0.0'),
+            StringStruct(u'FileDescription', u'NekoToolbox - portable Windows toolkit (folder restore / word count / JSON to MD / MD browser / HTML viewer / translate)'),
+            StringStruct(u'FileVersion', u'1.1.0.0'),
             StringStruct(u'InternalName', u'NekoToolbox'),
             StringStruct(u'LegalCopyright', u'Copyright (c) 2026 Charming - MIT License'),
             StringStruct(u'OriginalFilename', u'NekoToolbox.exe'),
             StringStruct(u'ProductName', u'NekoToolbox'),
-            StringStruct(u'ProductVersion', u'1.0.0'),
+            StringStruct(u'ProductVersion', u'1.1.0'),
             StringStruct(u'Comments', u'Generated entirely by AI, not reviewed line by line. Source: https://github.com/charming386/Neko-Toolbox')
           ]
         )

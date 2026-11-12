@@ -16,14 +16,16 @@
 """
 import re
 
-from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QFont
+from PySide6.QtCore import QEvent, QSize, Qt, QTimer, Signal
+from PySide6.QtGui import (QColor, QFont, QKeySequence, QShortcut, QTextCharFormat,
+                           QTextCursor, QTextDocument)
 from PySide6.QtWidgets import (QCheckBox, QFrame, QGridLayout, QHBoxLayout, QLabel,
-                               QPlainTextEdit, QPushButton, QVBoxLayout, QWidget)
+                               QLineEdit, QPlainTextEdit, QPushButton, QTextEdit,
+                               QVBoxLayout, QWidget)
 
 import store
 import theme
-from widgets import shadow
+from widgets import shadow, svg_icon
 
 # 汉字：基本区 + 扩展 A + 兼容区
 _CJK = "\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff"
@@ -70,6 +72,203 @@ def count_text(t, paras_mode="enter"):
         "en_words": en_words,
         "en_chars": len(_RE_EN_CHAR.findall(t)),
     }
+
+
+class FindBar(QWidget):
+    """输入框上方的查找条：Ctrl+F 打开，Enter 下一个，Shift+Enter 上一个，Esc 关闭。
+
+    和预览里的搜索条同一套手感，但作用对象是 QPlainTextEdit：
+    QPlainTextEdit 没有富文本的 find 高亮，所以命中位置要自己用
+    QTextDocument.find 走一遍算出来，再用 setExtraSelections 全部标黄，
+    当前命中靠 setTextCursor 的选区高亮表示（避免再画一层）。
+    """
+
+    closed = Signal()
+    MAX_HITS = 3000          # 命中太多就不数了，避免超大文档卡住
+
+    def __init__(self, editor, parent=None):
+        super().__init__(parent)
+        self._editor = editor
+        self._hits = []
+        self._idx = -1
+        self.setVisible(False)
+
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(theme.px(5))
+
+        self.edit = QLineEdit()
+        self.edit.setObjectName("FindEdit")
+        self.edit.setPlaceholderText("在文字里查找…")
+        self.edit.setFixedWidth(theme.px(168))
+        self.edit.setFixedHeight(theme.px(26))
+        self.edit.textChanged.connect(self._on_text)
+        self.edit.installEventFilter(self)
+        lay.addWidget(self.edit)
+
+        self.lbl = QLabel("")
+        self.lbl.setAlignment(Qt.AlignCenter)
+        self.lbl.setFixedWidth(theme.px(60))      # 容得下「1/3000+」
+        lay.addWidget(self.lbl)
+
+        self.btn_prev = self._btn("↑", self.prev_hit)
+        self.btn_next = self._btn("↓", self.next_hit)
+        self.btn_close = self._btn("✕", self.close_bar)
+        for b in (self.btn_prev, self.btn_next, self.btn_close):
+            lay.addWidget(b)
+        lay.addStretch(1)
+        self._style_label()
+
+    def _btn(self, text, slot):
+        b = QPushButton(text)
+        b.setFixedSize(theme.px(26), theme.px(26))
+        b.setCursor(Qt.PointingHandCursor)
+        # padding 归零：全局 QPushButton 的内边距会把 26px 宽按钮的字挤没
+        b.setStyleSheet(
+            f"QPushButton{{background:#ffffff; color:{theme.PRIMARY_PRESS};"
+            f"border:1px solid {theme.BORDER}; border-radius:7px; padding:0px;"
+            f"font-size:{theme.px(12)}px;}}"
+            f"QPushButton:hover{{border-color:{theme.PRIMARY};}}"
+            f"QPushButton:disabled{{color:#b9cfe0; border-color:#dfeaf4;}}")
+        b.clicked.connect(slot)
+        return b
+
+    def _style_label(self):
+        ok = bool(self._hits)
+        empty = not self.edit.text()
+        color = theme.TEXT_MUTED if (ok or empty) else "#c06a72"
+        # 到上限了要显示 3000+，否则用户会以为总共就这么几处
+        capped = len(self._hits) >= self.MAX_HITS
+        if empty:
+            self.lbl.setText("")
+        elif ok:
+            self.lbl.setText("%d/%d%s" % (self._idx + 1, len(self._hits),
+                                          "+" if capped else ""))
+        else:
+            self.lbl.setText("无结果")
+        self.lbl.setToolTip("命中超过 %d 处，只统计前 %d 处" % (self.MAX_HITS, self.MAX_HITS)
+                            if capped else "")
+        self.lbl.setStyleSheet(
+            f"color:{color}; font-size:{theme.px(11)}px; background:transparent;")
+        self.btn_prev.setEnabled(ok)
+        self.btn_next.setEnabled(ok)
+
+    # ---- 开 / 关 ----
+    def open(self, preset=""):
+        sel = self._editor.textCursor().selectedText().strip()
+        if preset:
+            self.edit.setText(preset)
+        elif sel and "\n" not in sel and len(sel) <= 60:
+            self.edit.setText(sel)
+        self.show()
+        self.edit.setFocus()
+        self.edit.selectAll()
+        self._on_text()          # 同一段文字再搜一次也要刷新（内容可能变过）
+
+    def close_bar(self):
+        self.hide()
+        self._editor.setExtraSelections([])
+        self._editor.setFocus()
+        self.closed.emit()
+
+    def refresh(self):
+        """正文变了：命中位置全变了，重新算一遍。"""
+        if self.isVisible():
+            self._on_text()
+
+    # ---- 搜索 ----
+    def _collect(self):
+        text = self.edit.text()
+        if not text:
+            return []
+        doc = self._editor.document()
+        flags = QTextDocument.FindFlags()
+        hits = []
+        cur = QTextCursor(doc)
+        while len(hits) < self.MAX_HITS:
+            cur = doc.find(text, cur, flags)
+            if cur.isNull():
+                break
+            hits.append((cur.selectionStart(), cur.selectionEnd()))
+        return hits
+
+    def _on_text(self):
+        self._hits = self._collect()
+        self._idx = -1
+        self._paint()
+        if self._hits:
+            self.next_hit(from_scratch=True)
+        else:
+            self._style_label()
+
+    def _paint(self):
+        fmt = QTextCharFormat()
+        fmt.setBackground(QColor("#fff0a8"))
+        sels = []
+        for s, e in self._hits[:600]:
+            c = QTextCursor(self._editor.document())
+            c.setPosition(s)
+            c.setPosition(e, QTextCursor.KeepAnchor)
+            sel = QTextEdit.ExtraSelection()
+            sel.cursor = c
+            sel.format = fmt
+            sels.append(sel)
+        self._editor.setExtraSelections(sels)
+
+    def _goto(self):
+        s, e = self._hits[self._idx]
+        c = QTextCursor(self._editor.document())
+        c.setPosition(s)
+        c.setPosition(e, QTextCursor.KeepAnchor)
+        self._editor.setTextCursor(c)
+        self._editor.centerCursor()      # 居中比 ensureCursorVisible 好找
+        self._style_label()
+
+    def next_hit(self, from_scratch=False):
+        if not self._hits:
+            self._style_label()
+            return
+        self._idx = 0 if from_scratch else (self._idx + 1) % len(self._hits)
+        self._goto()
+
+    def prev_hit(self):
+        if not self._hits:
+            self._style_label()
+            return
+        self._idx = (self._idx - 1) % len(self._hits)
+        self._goto()
+
+    def eventFilter(self, obj, e):
+        if obj is self.edit and e.type() == QEvent.KeyPress:
+            if e.key() in (Qt.Key_Return, Qt.Key_Enter):
+                if e.modifiers() & Qt.ShiftModifier:
+                    self.prev_hit()
+                else:
+                    self.next_hit()
+                return True
+            if e.key() == Qt.Key_Escape:
+                self.close_bar()
+                return True
+        return super().eventFilter(obj, e)
+
+
+def make_find_btn():
+    """输入框右上角的放大镜按钮（可勾选，用来开合查找条）。"""
+    b = QPushButton()
+    b.setCheckable(True)
+    b.setFixedSize(theme.px(26), theme.px(23))
+    b.setCursor(Qt.PointingHandCursor)
+    b.setToolTip("查找（Ctrl+F）")
+    b.setIcon(svg_icon("搜索.svg", theme.px(13), tint="#7d9cb5",
+                       hover_tint=theme.PRIMARY_PRESS))
+    b.setIconSize(QSize(theme.px(13), theme.px(13)))
+    b.setStyleSheet(
+        "QPushButton{background:rgba(255,255,255,0.86);"
+        f"border:1px solid {theme.BORDER_STRONG}; border-radius:8px; padding:0px;}}"
+        f"QPushButton:hover{{background:#ffffff; border-color:{theme.PRIMARY};}}"
+        f"QPushButton:checked{{background:{theme.PRIMARY_SOFT};"
+        f"border-color:{theme.PRIMARY};}}")
+    return b
 
 
 class StatCard(QFrame):
@@ -144,11 +343,16 @@ class WordCountPage(QWidget):
             f"border-color:rgba(213,232,246,0.9); background:rgba(255,255,255,0.5);}}")
         self.btn_clear.clicked.connect(self.clear_text)
 
+        # 放大镜放在「清空」左边，和它同一行
+        self.btn_find = make_find_btn()
+        self.btn_find.clicked.connect(self._toggle_find)
+
         tip_row = QHBoxLayout()
         tip_row.setContentsMargins(0, 0, 0, 0)
-        tip_row.setSpacing(theme.px(8))
+        tip_row.setSpacing(theme.px(6))
         tip_row.addWidget(tip)
         tip_row.addStretch(1)
+        tip_row.addWidget(self.btn_find)
         tip_row.addWidget(self.btn_clear)
         bl.addLayout(tip_row)
 
@@ -161,8 +365,19 @@ class WordCountPage(QWidget):
         self.editor.setFont(f)
         self.editor.setMinimumHeight(theme.px(220))
         self.editor.textChanged.connect(self._on_text_changed)
+
+        # 查找条默认收起（隐藏的控件不占布局高度），Ctrl+F 或点放大镜展开
+        self.find_bar = FindBar(self.editor)
+        self.find_bar.closed.connect(lambda: self.btn_find.setChecked(False))
+        bl.addWidget(self.find_bar)
+
         bl.addWidget(self.editor, 1)
         lay.addWidget(box, 1)
+
+        # Ctrl+F 在整个页面内都能唤起查找（焦点在输入框里时也生效）
+        self._sc_find = QShortcut(QKeySequence.Find, self)
+        self._sc_find.setContext(Qt.WidgetWithChildrenShortcut)
+        self._sc_find.activated.connect(self._open_find)
 
         # ---- 统计结果 ----
         res = QFrame()
@@ -246,11 +461,23 @@ class WordCountPage(QWidget):
 
     def _on_text_changed(self):
         self._sync_clear_btn()
+        self.find_bar.refresh()          # 正文变了，命中位置要重算
         # 不在前台/被切走时只记「脏」，等切回来再算，避免白耗 CPU
         if not self.isVisible():
             self._dirty = True
             return
         self._timer.start(self._current_interval())
+
+    # ---- 查找 ----
+    def _open_find(self):
+        self.find_bar.open()
+        self.btn_find.setChecked(True)
+
+    def _toggle_find(self):
+        if self.find_bar.isVisible():
+            self.find_bar.close_bar()
+        else:
+            self._open_find()
 
     def _sync_clear_btn(self):
         """没内容时「清空」按钮变灰 —— 空框上点它没意义。"""
@@ -278,11 +505,13 @@ class WordCountPage(QWidget):
         """别的工具（JSON 转 MD / 翻译）把文字送过来：替换内容并立刻统计。"""
         self.editor.setPlainText(text or "")
         self.recount()
+        self.find_bar.refresh()
 
     def clear_text(self):
         self.editor.clear()
         self._sync_clear_btn()
         self.recount()
+        self.find_bar.refresh()      # 清空后查找结果应显示「无结果」
 
 
 class WordCountSettings(QWidget):

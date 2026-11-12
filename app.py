@@ -947,6 +947,7 @@ class MainWindow(QMainWindow):
         self._build_wordcount_tool()
         self._build_jsonmd_tool()
         self._build_mdbrowser_tool()
+        self._build_htmlview_tool()
         self._build_translate_tool()
         cl.addWidget(self.tool_stack, 1)
 
@@ -988,7 +989,7 @@ class MainWindow(QMainWindow):
         t = QLabel(APP_NAME)
         t.setObjectName("AppTitle")
         col.addWidget(t)
-        s = QLabel("文件夹恢复 · 字数统计 · JSON 转 MD · MD 浏览器 · 翻译")
+        s = QLabel("文件夹恢复 · 字数统计 · JSON 转 MD · MD 浏览器 · HTML 显示器 · 翻译")
         s.setObjectName("AppSubtitle")
         col.addWidget(s)
         lay.addLayout(col)
@@ -1096,6 +1097,7 @@ class MainWindow(QMainWindow):
             ("wordcount", "字数统计", "粘文字\n即时统计"),
             ("jsonmd", "JSON转MD", "粘 JSON\n转成 MD"),
             ("mdbrowser", "MD浏览器", "粘 Markdown\n直接看版"),
+            ("htmlview", "HTML显示器", "粘 HTML\n看渲染"),
             ("translate", "翻译", "中英互译\n多风格多领域"),
         ]
 
@@ -1167,6 +1169,13 @@ class MainWindow(QMainWindow):
         # 纯前端渲染，没有设置项
         self._make_tool("mdbrowser", "MD浏览器", "粘 Markdown\n直接看版",
                         [("MD浏览器", self._mdb_page)], None)
+
+    def _build_htmlview_tool(self):
+        from htmlview import HtmlViewPage
+        self._hv_page = HtmlViewPage()
+        # 纯前端渲染，没有设置项
+        self._make_tool("htmlview", "HTML显示器", "粘 HTML\n看渲染",
+                        [("HTML显示器", self._hv_page)], None)
 
     def _build_translate_tool(self):
         from translate import TranslatePage, TranslationSettings
