@@ -13,8 +13,14 @@
 
 性能：全部是纯字符串/正则扫描，1 万字以内基本 1~3ms，10 万字也就几十毫秒，
 所以做成「输入停止 120ms 后自动统计」，不需要按钮，也不会占着 CPU。
+
+⚠️ 查找条的高亮必须「延迟 + 限量」：正文一变就全量重算的话，删除大段内容时
+textChanged 会连发几十次，每次上百毫秒，事件队列直接堆死（表现为整个工具箱卡住）。
 """
+import bisect
+import os
 import re
+import time
 
 from PySide6.QtCore import QEvent, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import (QColor, QFont, QKeySequence, QShortcut, QTextCharFormat,
@@ -50,6 +56,38 @@ FIELDS = [
 ]
 ALWAYS_ON = "words"
 
+# ---- 卡顿留证 ----
+# 正常使用不产生任何输出；只有界面真的被卡住超过 PERF_MIN_MS 才往 data/perf.log 记一行。
+# 起因：用户反馈「查找 + 删除一大段 + 撤销重做后整个工具箱卡死」，但本地各种文档规模、
+# 单行/多行、emoji、全选删除都复现不出来（最坏 200ms 级）。既然猜不准，就让程序自己留证据：
+# 日志里能看出卡了多久、当时文档多大、多少段、命中多少、查找条开没开。
+PERF_MIN_MS = 400
+
+
+def _perf(tag, ms, extra=""):
+    if ms < PERF_MIN_MS:
+        return
+    try:
+        import datetime
+        store.ensure_dir()
+        with open(os.path.join(store.DATA_DIR, "perf.log"), "a",
+                  encoding="utf-8") as f:
+            f.write("%s\t%-14s\t%7.0f ms\t%s\n" % (
+                datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                tag, ms, extra))
+    except Exception:
+        pass            # 留证本身绝不能反过来影响功能
+
+
+def _n(rx, t):
+    """数一个正则匹配了多少次。
+
+    不用 len(rx.findall(t))：10 万字的文本里汉字占一半，findall 会立刻造出
+    几万个临时字符串对象，既慢又吃内存。subn 在 C 层边扫边数，实测快 3~4 倍，
+    100 万字 92ms vs 296ms。
+    """
+    return rx.subn("", t)[1]
+
 
 def count_text(t, paras_mode="enter"):
     """一次扫描算出所有统计项。
@@ -57,9 +95,9 @@ def count_text(t, paras_mode="enter"):
     paras_mode: "enter" 按回车分段（非空行数，空行不额外算）/"blank" 按空行分段。
     """
     if not t:
-        return {k: 0 for k, _n, _d in FIELDS}
-    cjk = len(_RE_CJK.findall(t))
-    en_words = len(_RE_EN_WORD.findall(t))
+        return {k: 0 for k, _n_, _d in FIELDS}
+    cjk = _n(_RE_CJK, t)
+    en_words = _n(_RE_EN_WORD, t)
     return {
         "words": cjk + en_words,
         "chars": len(t),
@@ -68,9 +106,9 @@ def count_text(t, paras_mode="enter"):
                   if paras_mode != "blank"
                   else len([b for b in _RE_PARAS.split(t) if b.strip()])),
         "cjk": cjk,
-        "cjksym": len(_RE_CJK_SYM.findall(t)),
+        "cjksym": _n(_RE_CJK_SYM, t),
         "en_words": en_words,
-        "en_chars": len(_RE_EN_CHAR.findall(t)),
+        "en_chars": _n(_RE_EN_CHAR, t),
     }
 
 
@@ -79,18 +117,35 @@ class FindBar(QWidget):
 
     和预览里的搜索条同一套手感，但作用对象是 QPlainTextEdit：
     QPlainTextEdit 没有富文本的 find 高亮，所以命中位置要自己用
-    QTextDocument.find 走一遍算出来，再用 setExtraSelections 全部标黄，
+    QTextDocument.find 走一遍算出来，再用 setExtraSelections 标黄，
     当前命中靠 setTextCursor 的选区高亮表示（避免再画一层）。
+
+    性能上有四条硬规矩，少一条都会在大文档里卡死：
+      1. 正文变化（refresh）只「打标记」，延迟 REFRESH_MS 再算一次 —— 删除大段
+         内容时 textChanged 会连发几十次，每次都全量扫描就是几百毫秒的活。
+      2. 正文变化时绝不碰光标。正在用 Backspace 删东西时把光标拽到命中处，
+         删除就完全失控了，用户看到的就是「卡住 + 乱跳」。
+      3. 高亮只画当前命中附近的 PAINT_WINDOW 处。ExtraSelection 挂上去之后
+         每次编辑 Qt 都要维护它的位置，几千个会明显拖慢键入。
+      4. 收集命中要**分片**（SLICE_MS）：一次扫完 3000 处在几十万字的文档上
+         要几百毫秒，那是实打实的卡顿。分片之后每轮只占 8ms，界面永远能响应，
+         代价只是高亮分几轮补齐。
     """
 
     closed = Signal()
     MAX_HITS = 3000          # 命中太多就不数了，避免超大文档卡住
+    REFRESH_MS = 260         # 正文变化后延迟这么久再重算
+    PAINT_WINDOW = 240       # 只高亮当前命中附近的这么多处
+    SLICE_MS = 8             # 每片重算最多占用主线程多少毫秒
+    CHUNK = 240              # 每片最多收这么多处，收够就检查一次用时
 
     def __init__(self, editor, parent=None):
         super().__init__(parent)
         self._editor = editor
         self._hits = []
         self._idx = -1
+        self._painted = None      # 上次真交给 editor 的高亮区间，避免重复重绘
+        self._job = None          # 正在分片进行的收集任务
         self.setVisible(False)
 
         lay = QHBoxLayout(self)
@@ -105,6 +160,12 @@ class FindBar(QWidget):
         self.edit.textChanged.connect(self._on_text)
         self.edit.installEventFilter(self)
         lay.addWidget(self.edit)
+
+        # 正文变动后的延迟重算（用户停手才真正执行一次）
+        self._recalc = QTimer(self)
+        self._recalc.setSingleShot(True)
+        self._recalc.setInterval(self.REFRESH_MS)
+        self._recalc.timeout.connect(self._recalc_hits)
 
         self.lbl = QLabel("")
         self.lbl.setAlignment(Qt.AlignCenter)
@@ -138,15 +199,18 @@ class FindBar(QWidget):
         empty = not self.edit.text()
         color = theme.TEXT_MUTED if (ok or empty) else "#c06a72"
         # 到上限了要显示 3000+，否则用户会以为总共就这么几处
-        capped = len(self._hits) >= self.MAX_HITS
+        limit = self._limit()
+        capped = len(self._hits) >= limit
         if empty:
             self.lbl.setText("")
         elif ok:
-            self.lbl.setText("%d/%d%s" % (self._idx + 1, len(self._hits),
+            # _idx 可能是 -1（光标在所有命中之前，还没定位过这次的结果），
+            # 这时显示 1 —— 按 Enter 正是会落到第 1 处
+            self.lbl.setText("%d/%d%s" % (max(self._idx + 1, 1), len(self._hits),
                                           "+" if capped else ""))
         else:
             self.lbl.setText("无结果")
-        self.lbl.setToolTip("命中超过 %d 处，只统计前 %d 处" % (self.MAX_HITS, self.MAX_HITS)
+        self.lbl.setToolTip("命中超过 %d 处，只统计前 %d 处" % (limit, limit)
                             if capped else "")
         self.lbl.setStyleSheet(
             f"color:{color}; font-size:{theme.px(11)}px; background:transparent;")
@@ -166,47 +230,169 @@ class FindBar(QWidget):
         self._on_text()          # 同一段文字再搜一次也要刷新（内容可能变过）
 
     def close_bar(self):
+        self._recalc.stop()
+        self._job = None
         self.hide()
+        self._painted = None
         self._editor.setExtraSelections([])
         self._editor.setFocus()
         self.closed.emit()
 
     def refresh(self):
-        """正文变了：命中位置全变了，重新算一遍。"""
-        if self.isVisible():
-            self._on_text()
+        """正文变了：命中位置全变了，重新算一遍。
+
+        这里**不**同步算。删除大段内容时 textChanged 会连发几十次，每次全量
+        扫描 + 重画高亮要上百毫秒，事件队列会一直追不上 —— 整个程序就卡住了。
+        改成延迟：用户还在动就一直把计时推后，手一停才算一次。也不去动光标，
+        不然正在删的字会被拽到别处。
+        """
+        if not self.isVisible():
+            self._recalc.stop()
+            self._job = None
+            return
+        self._job = None        # 在跑的分片作废，等这次延迟到点重新开始
+        self._recalc.start(self.REFRESH_MS)
+
+    def _flush(self):
+        """有挂起的重算就当场跑完（用户按上下箭头/回车时要用最新命中）。"""
+        if self._recalc.isActive():
+            self._recalc.stop()
+            self._recalc_hits()
+        if self._job is not None:
+            self._step_job(full=True)
 
     # ---- 搜索 ----
-    def _collect(self):
-        text = self.edit.text()
-        if not text:
-            return []
-        doc = self._editor.document()
-        flags = QTextDocument.FindFlags()
-        hits = []
-        cur = QTextCursor(doc)
-        while len(hits) < self.MAX_HITS:
-            cur = doc.find(text, cur, flags)
-            if cur.isNull():
-                break
-            hits.append((cur.selectionStart(), cur.selectionEnd()))
-        return hits
+    def _limit(self):
+        """超大文档降低计数上限：30 万字以上扫 3000 处太费时间，1000 处够定位了。"""
+        if self._editor.document().characterCount() < 300000:
+            return self.MAX_HITS
+        return 1000
 
     def _on_text(self):
-        self._hits = self._collect()
-        self._idx = -1
-        self._paint()
-        if self._hits:
-            self.next_hit(from_scratch=True)
+        """查找词变了（用户主动输入）：立刻重算，并跳到第一处命中。
+
+        第一片给 60ms 预算：普通文档（十万字以内）一次就能跑完，用户看到的
+        是「输入即出结果」；只有超大文档才会继续分片，不至于边打字边卡。
+        """
+        self._recalc.stop()
+        self._recalc_hits(jump=True, first_ms=60)
+
+    # ---- 收集命中（分片执行，绝不长时间占住主线程）----
+    def _recalc_hits(self, jump=False, first_ms=None):
+        self._job = {
+            "token": object(),
+            "jump": jump,
+            "needle": self.edit.text(),
+            "hits": [],
+            "cur": QTextCursor(self._editor.document()),
+            "limit": self._limit(),
+        }
+        self._step_job(first_ms=first_ms)
+
+    def _step_job(self, token=None, full=False, first_ms=None):
+        """跑一片收集。完整跑完就收尾，没跑完就排队下一轮事件循环。
+
+        full=True 是不分片的「一次跑到底」—— 只在用户主动按键（Enter/箭头）
+        等着要结果时用，宁可阻塞这一下，也不能给出过期的命中。
+        """
+        job = self._job
+        if job is None or (token is not None and job["token"] is not token):
+            return              # 任务已被新一轮替换 / 取消
+        needle = job["needle"]
+        if not needle:
+            self._finish_job(job)
+            return
+        doc = self._editor.document()
+        flags = QTextDocument.FindFlags()
+        hits = job["hits"]
+        cur = job["cur"]
+        limit = job["limit"]
+        last = hits[-1][0] if hits else -1
+        if full:
+            budget = 60.0
+        elif first_ms is not None:
+            budget = first_ms / 1000.0
+        else:
+            budget = self.SLICE_MS / 1000.0
+        deadline = time.perf_counter() + budget
+        while len(hits) < limit:
+            cur = doc.find(needle, cur, flags)
+            if cur.isNull():
+                break
+            s, e = cur.selectionStart(), cur.selectionEnd()
+            if s <= last:
+                # 位置没往前走 —— 正常匹配长度至少 1，这里只是防死循环兜底，
+                # 万一真出现会转成几十万圈的忙等，界面彻底无响应
+                break
+            last = s
+            hits.append((s, e))
+            if len(hits) % self.CHUNK == 0 and time.perf_counter() > deadline:
+                job["cur"] = cur
+                tok = job["token"]
+                QTimer.singleShot(0, lambda: self._step_job(tok))
+                return
+        job["cur"] = cur
+        self._finish_job(job)
+
+    def _finish_job(self, job):
+        t0 = time.perf_counter()
+        hits = job["hits"]
+        self._job = None
+        changed = (hits != self._hits)
+        self._hits = hits
+        n = len(hits)
+        if job["jump"]:
+            self._idx = 0 if n else -1
+        elif not n:
+            self._idx = -1
+        else:
+            # 不跳转时把「当前」定在光标之前最近的一处：用户删改完接着按 Enter，
+            # 正好落到光标之后第一处，和标签上「下一个」的语义对齐；位置也顺便
+            # 当高亮窗口的中心，窗口自然跟着光标走。
+            pos = self._editor.textCursor().position()
+            j = bisect.bisect_left([h[0] for h in hits], pos)
+            self._idx = min(j, n) - 1
+        if changed:
+            self._paint(force=True)
+        if job["jump"] and n:
+            self._goto()
         else:
             self._style_label()
+        doc = self._editor.document()
+        _perf("收集命中", (time.perf_counter() - t0) * 1000.0,
+              "命中 %d / 文档 %d 字 / %d 段"
+              % (n, doc.characterCount(), doc.blockCount()))
 
-    def _paint(self):
+    def _paint(self, force=False):
+        """只画当前命中附近的窗口。
+
+        force=True 表示命中集合本身变了（位置全变），必须重画；
+        否则窗口没挪动就跳过 —— setExtraSelections 会触发一次完整的视口重绘。
+        """
+        hits = self._hits
+        if not hits:
+            if self._painted is not None:
+                self._painted = None
+                self._editor.setExtraSelections([])
+            return
+        n = len(hits)
+        w = self.PAINT_WINDOW
+        if n <= w:
+            lo, hi = 0, n
+        else:
+            idx = self._idx if self._idx >= 0 else 0
+            lo = max(0, min(idx - w // 2, n - w))
+            hi = lo + w
+        if not force and self._painted == (lo, hi):
+            return
+        self._painted = (lo, hi)
+        t0 = time.perf_counter()
         fmt = QTextCharFormat()
         fmt.setBackground(QColor("#fff0a8"))
+        doc = self._editor.document()
         sels = []
-        for s, e in self._hits[:600]:
-            c = QTextCursor(self._editor.document())
+        for s, e in hits[lo:hi]:
+            c = QTextCursor(doc)
             c.setPosition(s)
             c.setPosition(e, QTextCursor.KeepAnchor)
             sel = QTextEdit.ExtraSelection()
@@ -214,17 +400,35 @@ class FindBar(QWidget):
             sel.format = fmt
             sels.append(sel)
         self._editor.setExtraSelections(sels)
+        _perf("重画高亮", (time.perf_counter() - t0) * 1000.0,
+              "%d 处 / 文档 %d 字 / %d 段"
+              % (len(sels), doc.characterCount(), doc.blockCount()))
 
     def _goto(self):
+        if not (0 <= self._idx < len(self._hits)):
+            self._style_label()
+            return
+        t0 = time.perf_counter()
         s, e = self._hits[self._idx]
-        c = QTextCursor(self._editor.document())
+        doc = self._editor.document()
+        top = max(0, doc.characterCount() - 1)
+        # 命中的位置可能来自上一次统计（正文刚被删过），越界就夹回去，
+        # 否则 setPosition 会静默失败、光标乱跳
+        s = min(s, top)
+        e = min(max(e, s), top)
+        c = QTextCursor(doc)
         c.setPosition(s)
         c.setPosition(e, QTextCursor.KeepAnchor)
         self._editor.setTextCursor(c)
         self._editor.centerCursor()      # 居中比 ensureCursorVisible 好找
+        self._paint()                    # 当前命中换位置了，高亮窗口跟着挪
         self._style_label()
+        _perf("跳转命中", (time.perf_counter() - t0) * 1000.0,
+              "第 %d/%d 处 / 文档 %d 字 / %d 段"
+              % (self._idx + 1, len(self._hits), doc.characterCount(), doc.blockCount()))
 
     def next_hit(self, from_scratch=False):
+        self._flush()
         if not self._hits:
             self._style_label()
             return
@@ -232,6 +436,7 @@ class FindBar(QWidget):
         self._goto()
 
     def prev_hit(self):
+        self._flush()
         if not self._hits:
             self._style_label()
             return
@@ -302,6 +507,8 @@ class WordCountPage(QWidget):
     """字数统计主体：一个大输入框 + 下面的统计卡片。"""
 
     DEBOUNCE_MS = 120
+    WATCHDOG_MS = 100       # 卡顿探针的节拍
+    STALL_MIN_MS = 400      # 晚到超过这么多才算「卡了一下」，才写日志
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -421,6 +628,26 @@ class WordCountPage(QWidget):
         # 起始是空框 → 「清空」按钮先灰着
         self._sync_clear_btn()
 
+        # 卡顿探针：正常每 100ms 响一次，某次明显晚到就说明主线程刚被卡住了。
+        # 开销极低（一次时钟读取），只有超过阈值才写日志。
+        self._wd_last = time.perf_counter()
+        self._wd = QTimer(self)
+        self._wd.setInterval(self.WATCHDOG_MS)
+        self._wd.timeout.connect(self._watchdog)
+        self._wd.start()
+
+    def _watchdog(self):
+        now = time.perf_counter()
+        gap = (now - self._wd_last) * 1000.0
+        self._wd_last = now
+        if not self.isVisible() or gap < self.STALL_MIN_MS:
+            return
+        doc = self.editor.document()
+        _perf("界面阻塞", gap, "文档 %d 字 / %d 段 / 命中 %d / 高亮 %d / 查找条 %s"
+              % (doc.characterCount(), doc.blockCount(), len(self.find_bar._hits),
+                 len(self.editor.extraSelections()),
+                 "开" if self.find_bar.isVisible() else "关"))
+
     # ---- 设置 ----
     def apply_settings(self):
         """按设置显示/隐藏统计项，重新排网格（每行最多 4 个）。"""
@@ -490,10 +717,12 @@ class WordCountPage(QWidget):
             self.recount()
 
     def recount(self):
-        import time
         t0 = time.perf_counter()
         stats = count_text(self.editor.toPlainText(), self._paras_mode)
         ms = (time.perf_counter() - t0) * 1000.0
+        _perf("统计", ms, "文档 %d 字 / %d 段"
+              % (self.editor.document().characterCount(),
+                 self.editor.document().blockCount()))
         for key, card in self._cards.items():
             if key in stats:
                 card.set_value(stats[key])
